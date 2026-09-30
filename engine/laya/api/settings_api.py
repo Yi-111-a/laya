@@ -5,6 +5,7 @@
 
 import asyncio
 import time
+from datetime import date
 
 import httpx
 import structlog
@@ -70,6 +71,52 @@ def _is_chat_model(model_id: str) -> bool:
     return not any(pat in lower for pat in _EXCLUDE_PATTERNS)
 
 
+def _is_retired_model(model_id: str) -> bool:
+    """True if the provider has already retired this model.
+
+    LiteLLM's static `models_by_provider` list is generated from the
+    providers' published model tables and keeps entries long after the model
+    itself is shut down. Offering one is worse than offering nothing: the user
+    picks it, every call 404s, and (for the Router stage) each event burns its
+    whole retry budget and then fails permanently with no UI signal. See
+    issue #25 -- Google retired `gemini-2.0-flash` (404 "no longer
+    available") while it was still Laya's suggested Router default.
+
+    Rather than hardcode a denylist per provider, read the deprecation date
+    LiteLLM already ships in `model_cost` and drop anything past it, so this
+    generalises to every provider the moment LiteLLM updates its table.
+    Models absent from the table, and models whose date we cannot parse, are
+    kept -- a missing cost entry is not evidence of retirement.
+    """
+    import litellm
+
+    # getattr, not attribute access: if a LiteLLM release in the supported
+    # range ever moves the cost table, the filter degrades to "keep
+    # everything" instead of taking the whole model list down with it.
+    entry = getattr(litellm, "model_cost", {}).get(model_id)
+    if not isinstance(entry, dict):
+        return False
+
+    raw = entry.get("deprecation_date")
+    if not raw:
+        return False
+
+    try:
+        # LiteLLM writes these as "YYYY-MM-DD"; a bare year is tolerated
+        # because a few upstream tables are that coarse.
+        parts = str(raw).split("-")
+        if len(parts) == 3:
+            retired = date(int(parts[0]), int(parts[1]), int(parts[2]))
+        elif len(parts) == 1:
+            retired = date(int(parts[0]), 12, 31)
+        else:
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    return retired < date.today()
+
+
 def _fetch_models_for_provider(provider: str) -> list[dict[str, str]]:
     """Fetch available models for a provider. Runs synchronously (call from executor)."""
     import litellm
@@ -101,10 +148,22 @@ def _fetch_models_for_provider(provider: str) -> list[dict[str, str]]:
         models = list(static)
         log.info("models_fetched_static", provider=provider, count=len(models))
 
-    # Filter to chat models and sort
-    models = sorted([m for m in models if _is_chat_model(m)])
+    # Filter to chat models that are still live, and sort. Both filters run
+    # in one pass so a model isn't re-checked against the cost table twice.
+    live: list[str] = []
+    dropped: list[str] = []
+    for m in models:
+        if not _is_chat_model(m):
+            continue
+        if _is_retired_model(m):
+            dropped.append(m)
+        else:
+            live.append(m)
 
-    return [{"id": m, "name": _generate_label(m)} for m in models]
+    if dropped:
+        log.info("models_retired_filtered", provider=provider, count=len(dropped), models=dropped[:5])
+
+    return [{"id": m, "name": _generate_label(m)} for m in sorted(live)]
 
 
 @router.get("/settings/setup-status")

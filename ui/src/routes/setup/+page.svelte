@@ -37,10 +37,13 @@
 	};
 
 	// Provider-to-model defaults: small model for router, large model for stager/chat/trace
+	// Keep these off retired models -- a shut-down model makes every call 404 and
+	// each event then fails permanently with no UI signal (issue #25). The engine
+	// also filters retired models out of GET /settings/available-models.
 	const providerModelDefaults: Record<string, Record<string, string>> = {
 		anthropic: { router: 'claude-haiku-4-5', stager: 'claude-sonnet-4-6', chat: 'claude-sonnet-4-6', trace: 'claude-sonnet-4-6', omni: 'claude-sonnet-4-6' },
 		openai: { router: 'gpt-4o-mini', stager: 'gpt-4o', chat: 'gpt-4o', trace: 'gpt-4o', omni: 'gpt-4o' },
-		google: { router: 'gemini-2.0-flash', stager: 'gemini-2.5-pro', chat: 'gemini-2.5-pro', trace: 'gemini-2.5-pro', omni: 'gemini-2.5-pro' }
+		google: { router: 'gemini-2.5-flash', stager: 'gemini-2.5-pro', chat: 'gemini-2.5-pro', trace: 'gemini-2.5-pro', omni: 'gemini-2.5-pro' }
 	};
 
 	// Step 2: Model defaults
